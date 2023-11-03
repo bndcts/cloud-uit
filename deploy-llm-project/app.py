@@ -45,18 +45,12 @@ load_dotenv()
 
 embeddings_model_name = 'all-MiniLM-L6-v2'#os.environ.get("EMBEDDINGS_MODEL_NAME")
 persist_directory = 'data/privateGPTpp/db'#os.environ.get('PERSIST_DIRECTORY')
-
-
-model_n_batch = 8
-target_source_chunks = 4
-model_n_ctx = 2000
-
-# Load environment variables
-#persist_directory = os.environ.get('PERSIST_DIRECTORY')
 source_directory = r'/data/privateGPTpp/source_documents'
-#embeddings_model_name = os.environ.get('EMBEDDINGS_MODEL_NAME')
-chunk_size = 500
-chunk_overlap = 50
+
+model_n_ctx = 2048
+target_source_chunks = 4
+chunk_size = 256
+chunk_overlap = 30
 
 from constants import CHROMA_SETTINGS
 
@@ -82,6 +76,7 @@ class MyElmLoader(UnstructuredEmailLoader):
 
         return doc
 
+
 # Map file extensions to document loaders and their arguments
 LOADER_MAPPING = {
     ".csv": (CSVLoader, {}),
@@ -101,6 +96,7 @@ LOADER_MAPPING = {
     # Add more mappings for other file extensions and loaders as needed
 }
 
+
 def load_single_document(file_path: str) -> List[Document]:
     ext = "." + file_path.rsplit(".", 1)[-1]
     if ext in LOADER_MAPPING:
@@ -109,6 +105,7 @@ def load_single_document(file_path: str) -> List[Document]:
         return loader.load()
 
     raise ValueError(f"Unsupported file extension '{ext}'")
+
 
 def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Document]:
     """
@@ -129,6 +126,7 @@ def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Docum
                 pbar.update()
 
     return results
+
 
 def process_documents(ignored_files: List[str] = []) -> List[Document]:
     """
@@ -152,27 +150,28 @@ def process_documents(ignored_files: List[str] = []) -> List[Document]:
     print(f"Split into {len(texts)} chunks of text (max. {chunk_size} tokens each)")
     return texts
 
-def does_vectorstore_exist(persist_directory: str) -> bool:
-    """
-    Checks if vectorstore exists
-    """
-    if os.path.exists(os.path.join(persist_directory, 'index')):
-        if os.path.exists(os.path.join(persist_directory, 'chroma-collections.parquet')) and os.path.exists(os.path.join(persist_directory, 'chroma-embeddings.parquet')):
-            list_index_files = glob.glob(os.path.join(persist_directory, 'index/*.bin'))
-            list_index_files += glob.glob(os.path.join(persist_directory, 'index/*.pkl'))
-            # At least 3 documents are needed in a working vectorstore
-            if len(list_index_files) > 3:
-                return True
+
+def vectorstore_exists(persist_directory: str) -> bool:
+    if os.path.exists(os.path.join(persist_directory, 'index')) \
+    and os.path.exists(os.path.join(persist_directory, 'chroma-collections.parquet')) \
+    and os.path.exists(os.path.join(persist_directory, 'chroma-embeddings.parquet')):
+        list_index_files = glob.glob(os.path.join(persist_directory, 'index/*.bin'))
+        list_index_files += glob.glob(os.path.join(persist_directory, 'index/*.pkl'))
+        # At least 3 documents are needed in a working vectorstore
+        if len(list_index_files) > 3:
+            return True
     return False
+
 
 def ingest():
     # Create embeddings
     embeddings = HuggingFaceEmbeddings(model_name=embeddings_model_name)
 
-    if does_vectorstore_exist(persist_directory):
+    if vectorstore_exists(persist_directory):
         # Update and store locally vectorstore
         print(f"Appending to existing vectorstore at {persist_directory}")
-        db = Chroma(persist_directory=persist_directory, embedding_function=embeddings, client_settings=CHROMA_SETTINGS)
+        db = Chroma(persist_directory=persist_directory, embedding_function=embeddings,
+                    client_settings=CHROMA_SETTINGS)
         collection = db.get()
         texts = process_documents([metadata['source'] for metadata in collection['metadatas']])
         print(f"Creating embeddings. May take some minutes...")
@@ -181,19 +180,22 @@ def ingest():
         # Create and store locally vectorstore
         print("Creating new vectorstore")
         texts = process_documents()
-        print(texts)
+        # print(texts)
         print(f"Creating embeddings. May take some minutes...")
-        db = Chroma.from_documents(texts, embedding=embeddings, persist_directory=persist_directory, client_settings=CHROMA_SETTINGS)
+        db = Chroma.from_documents(texts, embedding=embeddings, persist_directory=persist_directory,
+                                   client_settings=CHROMA_SETTINGS)
     db.persist()
     db = None
 
     print(f"Ingestion complete! You can now run privateGPT.py to query your documents")
-    
+
+
 def get_gpu_memory() -> int:
     """
     Returns the amount of free memory in MB for each GPU.
     """
     return int(torch_cuda.mem_get_info()[0]/(1024**2))
+
 
 def calculate_layer_count() -> int | None:
     """
@@ -210,49 +212,31 @@ def calculate_layer_count() -> int | None:
     else:
         return (get_gpu_memory()//LAYER_SIZE_MB-LAYERS_TO_REDUCE)
 
-def call_model(query, model_type, hide_source):
-    # Parse the command line arguments
-    #args = parse_arguments()
-    embeddings = HuggingFaceEmbeddings(model_name=embeddings_model_name)
-    
-    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings, client_settings=CHROMA_SETTINGS)
 
-    print(f"Ingestion complete! You can now run privateGPT.py to query your documents")
-    #callbacks = [] if args.mute_stream else [StreamingStdOutCallbackHandler()]
-    
-    retriever = db.as_retriever(search_kwargs={"k": target_source_chunks})
-    # activate/deactivate the streaming StdOut callback for LLMs
-    #callbacks = [] if args.mute_stream else [StreamingStdOutCallbackHandler()]
-    # Prepare the LLM/mnt/nas1/nba055-2/privateGPTpp/models/llama-2-7b-chat.ggmlv3.q4_0.bin
+def get_llm(model_type: str):
     match model_type:
         case "LlamaCpp":
-            #llm = LlamaCpp(model_path=model_path, max_tokens=model_n_ctx, n_batch=model_n_batch, callbacks=callbacks, verbose=False)
-            llm = LlamaCpp(model_path=r'/data/privateGPTpp/models/llama-2-7b-chat.ggmlv3.q4_0.bin', n_ctx=model_n_ctx, verbose=False, n_gpu_layers=calculate_layer_count())
+            return LlamaCpp(model_path=r'/data/privateGPTpp/models/llama-2-7b-chat.ggmlv3.q4_0.bin',
+                            n_ctx=model_n_ctx,
+                            verbose=False,
+                            n_gpu_layers=calculate_layer_count())
         case "GPT4All":
-            #llm = GPT4All(model=model_path, max_tokens=model_n_ctx, backend='gptj', n_batch=model_n_batch, callbacks=callbacks, verbose=False)
-            llm = GPT4All(model="data/privateGPTpp/models/ggml-gpt4all-j-v1.3-groovy.bin", backend='gptj', verbose=False)
-        case "MedLlama":
-            llm = HuggingFacePipeline.from_model_id(model_id='/data/privateGPTpp/models/medllama', task="text-generation", device=1,
-                                        model_kwargs={"trust_remote_code": True, "torch_dtype": "auto", "max_length":model_n_ctx})
-        case "phi":
-            llm = HuggingFacePipeline.from_model_id(model_id='/data/privateGPTpp/models/phi-1_5',task="text-generation", 
-                                        model_kwargs={"trust_remote_code": True, "torch_dtype": "auto", "max_length":model_n_ctx})
-        case "codegeex2":
-            llm = HuggingFacePipeline.from_model_id(model_id='/data/privateGPTpp/models/codegeex2-6b', task="text-generation", device=1,
-                                        model_kwargs={"trust_remote_code": True, "torch_dtype": "auto", "max_length":model_n_ctx})
-        case "codellama":
-            llm = HuggingFacePipeline.from_model_id(model_id='/data/privateGPTpp/models/CodeLlama-7b-hf', task="text-generation", device=1,
-                                        model_kwargs={"trust_remote_code": True, "torch_dtype": "auto", "max_length":model_n_ctx})
-        case "vicuna":
-            llm = HuggingFacePipeline.from_model_id(model_id='/data/privateGPTpp/models/vicuna-7b-v1.5', task="text-generation", device=1,
-                                        model_kwargs={"trust_remote_code": True, "torch_dtype": "auto", "max_length":model_n_ctx})
-        case _default:
-            # raise exception if model_type is not supported
+            return GPT4All(model=r'/data/privateGPTpp/models/ggml-gpt4all-j-v1.3-groovy.bin',
+                           backend='gptj',
+                           verbose=False)
+        case _:
             raise Exception(f"Model type {model_type} is not supported. Please choose one of the following: LlamaCpp, GPT4All")
-        
+
+
+def call_model(query, model_type: str, hide_source):
+    embeddings = HuggingFaceEmbeddings(model_name=embeddings_model_name)
+    db = Chroma(persist_directory=persist_directory, embedding_function=embeddings, client_settings=CHROMA_SETTINGS)
+    # print(f"Ingestion complete! You can now run privateGPT.py to query your documents")
+    retriever = db.as_retriever(search_kwargs={"k": target_source_chunks})
+
+    llm = get_llm(model_type)
     qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever, return_source_documents= not hide_source)
     # Interactive questions and answers
-    
 
     # Get the answer from the chain
     start = time.time()
@@ -261,21 +245,18 @@ def call_model(query, model_type, hide_source):
     end = time.time()
 
     # Print the result
-    '''print("\n\n> Question:")
+    print("\n\n> Question:")
     print(query)
     print(f"\n> Answer (took {round(end - start, 2)} s.):")
-    print(answer)'''
+    # print(answer)
 
     # Print the relevant sources used for the answer
     sources = []
     for document in docs:
-        #print("\n> " + document.metadata["source"] + ":")
-        #print(document.page_content)
         # Append source and page content to sources list
         sources.append(document.metadata["source"] + ":" + document.page_content)
-        
-    return answer, sources
 
+    return answer, sources
 
 ###################################################################################################################################################
 
@@ -284,35 +265,37 @@ CORS(app)
 
 @app.route("/")
 def hello():
-    #return "<p>Hello, World!</p>"
     return render_template('index.html')
 
 @app.route("/", methods=['POST'])
 def hello_post():
     return "<p>Hello, World!</p>"
-    
+
+@app.route("/getsources", methods=['GET'])
+def getsources():
+    files = os.listdir(source_directory)
+    return {'files': files}
+
+@app.route("/deletesource", methods=['POST'])
+def deletesource():
+    data = request.get_json()
+    print(data)
+
+    fname = data['file']
+    fpath = f'{source_directory}/{fname}'
+    print(f"removing file {fpath} ...")
+    os.remove(fpath)
+    return {'fpath': fpath}
 
 @app.route("/upload", methods=['POST'])
 def upload():
-    #Get the filename
-    filename = request.files['file'].filename
-    
     # Upload the file to the source directory
-     
-    file = request.files['file']#.read().decode("latin-1")
-    #print(file)
-    # Save the file to the source directory
-    '''os.chdir(source_directory)
-    with open(filename, "w") as f:
-        f.write(file)'''
+    file = request.files['file']
     file.save('/data/privateGPTpp/source_documents/' +(file.filename))
     ingest()
-    
-    # Return a message to the json file
-    #return {'message': 'File uploaded successfully'}
+
     # return a message to be displayed on the "/" webpage and not the "/upload" webpage
     return redirect(url_for('hello'))
-    
 
 @app.route("/predict", methods=['POST'])
 def predict():
@@ -325,22 +308,26 @@ def predict():
     model_type = data['model']
     print(text)
     print(model_type)
-    
+
     # Check if the source directory is empty
     if not os.listdir(source_directory):
         print("Source directory is empty. Please upload a file first.")
-    
+
     answer, sources = call_model(text, model_type, hide_source=False)
-    print(sources)
+    # print(sources)
+
     # From each of the elements in the sources list, split the string at the first colon
+    src = ''
+
     sources = [source.split(":", 1) for source in sources]
+
     # Concatenate the sources list to a string
     sources = '\n\n'.join([source[1] for source in sources])
-    # Concatenate the sources string to the answer string and add Source: to the beginning of the sources string
-    answer = answer + '\n\nSources :\n\n' + sources
+
     # Return the answer and sources as a dict which can be read in json format in javascript
-    return {'answer': answer}
+    return {'answer': answer, 'sources': sources}
+
 
 if __name__ == '__main__':
     app.config['UPLOAD_FOLDER'] = 'source_documents'
-    app.run(port=4000, host='0.0.0.0', debug=True)
+    app.run(port=8888, host='0.0.0.0', debug=True)
